@@ -1,0 +1,10 @@
+.env
+.claude
+.pytest_cache
+pytest.ini
+alphaagent/__pycache__
+alphaagent/agents/__pycache__
+alphaagent/db/__pycache__
+tests/__pycache__
+alphaagent.db
+alphaagent.db.gz
