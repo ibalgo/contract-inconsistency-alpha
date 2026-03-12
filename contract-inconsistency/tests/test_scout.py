@@ -57,7 +57,7 @@ def _make_polymarket_raw(**overrides) -> dict:
 
 def test_auth_headers_structure():
     """KALSHI-ACCESS-KEY, TIMESTAMP, SIGNATURE must all be present."""
-    from alphaagent.agents.scout import _build_kalshi_auth_headers
+    from market_ingestion.kalshi.auth import _build_kalshi_auth_headers
 
     headers = _build_kalshi_auth_headers("GET", "/trade-api/v2/markets")
 
@@ -65,12 +65,10 @@ def test_auth_headers_structure():
     assert "KALSHI-ACCESS-TIMESTAMP" in headers
     assert "KALSHI-ACCESS-SIGNATURE" in headers
 
-    # Timestamp must be numeric and in milliseconds (13 digits for 2025)
     ts = headers["KALSHI-ACCESS-TIMESTAMP"]
     assert ts.isdigit()
     assert len(ts) == 13, f"Expected 13-digit ms timestamp, got {ts!r}"
 
-    # Signature must be valid base64
     sig = headers["KALSHI-ACCESS-SIGNATURE"]
     decoded = base64.b64decode(sig)
     assert len(decoded) > 0
@@ -78,11 +76,10 @@ def test_auth_headers_structure():
 
 def test_auth_headers_unique_per_call():
     """Each call should produce a different timestamp (or at least not crash)."""
-    from alphaagent.agents.scout import _build_kalshi_auth_headers
+    from market_ingestion.kalshi.auth import _build_kalshi_auth_headers
 
     h1 = _build_kalshi_auth_headers("GET", "/trade-api/v2/markets")
     h2 = _build_kalshi_auth_headers("POST", "/trade-api/v2/orders")
-    # Different method/path — different message → different signature
     assert h1["KALSHI-ACCESS-SIGNATURE"] != h2["KALSHI-ACCESS-SIGNATURE"]
 
 
@@ -93,7 +90,7 @@ def test_auth_headers_unique_per_call():
 
 def test_normalize_kalshi_price_midpoint():
     """bid/ask dollar strings should be averaged to float in [0, 1]."""
-    from alphaagent.agents.scout import _normalize_kalshi_market
+    from market_ingestion.kalshi.normalize import _normalize_kalshi_market
 
     raw = _make_kalshi_raw(yes_bid_dollars="0.40", yes_ask_dollars="0.44")
     m = _normalize_kalshi_market(raw)
@@ -103,7 +100,7 @@ def test_normalize_kalshi_price_midpoint():
 
 def test_normalize_kalshi_price_fallback():
     """Falls back to last_price_dollars when bid/ask are absent."""
-    from alphaagent.agents.scout import _normalize_kalshi_market
+    from market_ingestion.kalshi.normalize import _normalize_kalshi_market
 
     raw = _make_kalshi_raw(
         yes_bid_dollars=None,
@@ -123,7 +120,7 @@ def test_normalize_kalshi_price_fallback():
 
 def test_normalize_polymarket_outcome_prices():
     """outcomePrices JSON string should be parsed; index 0 → yes, 1 → no."""
-    from alphaagent.agents.scout import _normalize_polymarket_market
+    from market_ingestion.polymarket.normalize import _normalize_polymarket_market
 
     raw = _make_polymarket_raw(outcomePrices='["0.62", "0.38"]')
     m = _normalize_polymarket_market(raw)
@@ -133,7 +130,7 @@ def test_normalize_polymarket_outcome_prices():
 
 def test_normalize_polymarket_price_fallback():
     """Uses bestAsk/bestBid when outcomePrices is null."""
-    from alphaagent.agents.scout import _normalize_polymarket_market
+    from market_ingestion.polymarket.normalize import _normalize_polymarket_market
 
     raw = _make_polymarket_raw(outcomePrices=None, bestAsk="0.65", bestBid="0.35")
     m = _normalize_polymarket_market(raw)
@@ -147,7 +144,7 @@ def test_normalize_polymarket_price_fallback():
 
 
 def test_canonical_category_kalshi():
-    from alphaagent.agents.scout import canonical_category
+    from market_ingestion.kalshi.normalize import canonical_category
 
     assert canonical_category("BTCUSD", "kalshi") == "crypto"
     assert canonical_category("PRES", "kalshi") == "politics"
@@ -156,9 +153,8 @@ def test_canonical_category_kalshi():
 
 
 def test_canonical_category_polymarket():
-    from alphaagent.agents.scout import canonical_category
+    from market_ingestion.kalshi.normalize import canonical_category
 
-    # Case-insensitive
     assert canonical_category("crypto", "polymarket") == "crypto"
     assert canonical_category("Crypto", "polymarket") == "crypto"
     assert canonical_category("CRYPTO", "polymarket") == "crypto"
@@ -167,7 +163,7 @@ def test_canonical_category_polymarket():
 
 
 def test_canonical_category_none_input():
-    from alphaagent.agents.scout import canonical_category
+    from market_ingestion.kalshi.normalize import canonical_category
 
     assert canonical_category(None, "kalshi") is None
     assert canonical_category("", "polymarket") is None
@@ -201,7 +197,6 @@ def test_extract_signals_thresholds(nlp):
 
     text = "Resolves YES if price exceeds $100,000 at any point."
     sigs = extract_signals(text, nlp)
-    # Should detect the $100,000 threshold
     found = any("100000" in t or "100,000" in t or "$" in t for t in sigs.thresholds)
     assert found, f"Expected threshold with 100000, got: {sigs.thresholds}"
 
@@ -215,7 +210,6 @@ def test_count_shared_signals(nlp):
     sigs_b = extract_signals(text_b, nlp)
     count, basis = count_shared_signals(sigs_a, sigs_b)
     assert count >= 1
-    # Basis tokens should be formatted correctly
     for token in basis:
         assert token.startswith(("shared_date:", "shared_threshold:", "shared_entity:"))
 
@@ -261,7 +255,7 @@ def test_embedding_different_texts(embedding_model):
 @pytest.mark.asyncio
 async def test_fetch_kalshi_pagination():
     """Two-page response should yield markets from both pages."""
-    from alphaagent.agents.scout import fetch_kalshi_markets
+    from market_ingestion.kalshi.client import fetch_kalshi_markets
 
     page1 = {
         "markets": [_make_kalshi_raw(ticker="TICK-A", event_ticker="BTCUSD-25DEC")],
@@ -299,7 +293,7 @@ async def test_fetch_kalshi_pagination():
 @pytest.mark.asyncio
 async def test_fetch_polymarket_pagination():
     """Offset increments until a short page stops pagination."""
-    from alphaagent.agents.scout import fetch_polymarket_markets
+    from market_ingestion.polymarket.client import fetch_polymarket_markets
 
     page1 = [_make_polymarket_raw(conditionId=f"0x{i:04x}") for i in range(100)]
     page2 = [_make_polymarket_raw(conditionId=f"0x{i:04x}") for i in range(100, 115)]
@@ -322,7 +316,7 @@ async def test_fetch_polymarket_pagination():
         markets = await fetch_polymarket_markets()
 
     assert len(markets) == 115
-    assert call_count == 2  # stopped after short page
+    assert call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +341,6 @@ def test_upsert_markets_idempotent(tmp_path):
     Base.metadata.create_all(bind=test_engine)
     TestSession = sessionmaker(bind=test_engine)
 
-    # Patch the lazy accessors so upsert_markets uses the test engine
     with (
         patch("alphaagent.db.session._get_engine", return_value=test_engine),
         patch("alphaagent.db.session._get_session_factory", return_value=TestSession),
@@ -370,13 +363,11 @@ def test_upsert_markets_idempotent(tmp_path):
         ]
 
         id_map_1 = upsert_markets(market_data)
-        id_map_2 = upsert_markets(market_data)  # duplicate insert
+        id_map_2 = upsert_markets(market_data)
 
-        # Same ID returned both times
         key = ("kalshi", "TEST-TICKER-1")
         assert id_map_1[key] == id_map_2[key]
 
-        # Only one row in the DB
         from alphaagent.db.models import Market
         with TestSession() as s:
             count = s.query(Market).count()

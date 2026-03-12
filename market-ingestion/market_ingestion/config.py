@@ -5,7 +5,6 @@ from functools import cached_property
 from pathlib import Path
 
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +19,6 @@ def _read_pem_from_env_file(env_file: str = ".env") -> str:
     except FileNotFoundError:
         return ""
 
-    # Match RSA PRIVATE KEY or PRIVATE KEY blocks
     match = re.search(
         r"(-----BEGIN (?:RSA )?PRIVATE KEY-----.*?-----END (?:RSA )?PRIVATE KEY-----)",
         content,
@@ -42,27 +40,13 @@ class Settings(BaseSettings):
 
     polymarket_base_url: str = "https://gamma-api.polymarket.com"
 
-    # Use ALPHAAGENT_DB_URL to avoid colliding with system DATABASE_URL env var
-    database_url: str = Field(
-        default="sqlite:///alphaagent.db",
-        validation_alias="ALPHAAGENT_DB_URL",
-    )
-
-    cosine_similarity_threshold: float = 0.75
-    min_shared_signals: int = 2
-    embedding_model: str = "all-MiniLM-L6-v2"
-
-    anthropic_api_key: str = ""
-
     @cached_property
     def kalshi_private_key(self):
         pem = self.kalshi_api_private_key.strip()
 
-        # Replace literal \n with actual newlines (env var exported on one line)
         if "\\n" in pem:
             pem = pem.replace("\\n", "\n")
 
-        # If dotenv only read the header line, fall back to reading the raw file
         if not pem or pem == "-----BEGIN RSA PRIVATE KEY-----":
             pem = _read_pem_from_env_file()
 
