@@ -9,6 +9,101 @@ AlphaAgent discovers trading alpha in prediction markets by detecting logical, t
 
 Even when two contracts appear identical, differences in resolution source, timezone cutoffs, revision policies, or event definitions can cause them to resolve differently — creating exploitable price divergences.
 
+## Project Structure
+
+### market-ingestion/
+
+Shared venue API clients. Responsibilities: authentication, pagination, price normalization,
+category bucketing. Produces `MarketIn` / `MarketOut` objects and nothing else.
+
+```
+market-ingestion/
+├── .env.example                    # KALSHI_API_KEY (Polymarket is public)
+│
+├── market_ingestion/
+   ├── __init__.py
+   ├── config.py                   # Pydantic-settings; reads KALSHI_API_KEY
+   │                               # PEM key via _read_pem_from_env_file() raw-file fallback
+   ├── schemas.py                  # MarketIn, MarketOut — shared data contract
+   │
+   ├── kalshi/
+   │   ├── __init__.py
+   │   ├── auth.py                 # RSA-PSS header signing
+   │   │                           #   message = f"{ts_ms}{METHOD}{path}"
+   │   │                           #   headers: KALSHI-ACCESS-KEY / -TIMESTAMP / -SIGNATURE
+   │   ├── client.py               # Async paginated fetcher → list[MarketIn]
+   │   └── normalize.py            # cents → float (62 → 0.62); canonical_category()
+   │
+   └── polymarket/
+       ├── __init__.py
+       ├── client.py               # Async paginated fetcher → list[MarketIn]
+       └── normalize.py            # outcomePrices JSON decode; bestAsk/bestBid fallback
+
+```
+
+
+### contract-inconsistency/
+
+The AlphaAgent pipeline. Detects logical, temporal, and structural inconsistencies between
+similar markets across venues. Calls `market-ingestion` for all raw data.
+
+```
+contract-inconsistency/
+├── .env.example                    # ANTHROPIC_API_KEY, DATABASE_URL
+├── main.py                         # CLI: `python main.py` | `python main.py --serve`
+│
+├── alphaagent/
+   ├── __init__.py
+   ├── config.py                   # ANTHROPIC_API_KEY, DATABASE_URL
+   │                               # field_validator: postgres:// → postgresql://
+   ├── schemas.py                  # ContractConstraints, Inconsistency, AlphaScore,
+   │                               # CandidatePairIn/Out, (re-exports MarketIn/MarketOut)
+   │
+   ├── db/
+   │   ├── __init__.py
+   │   ├── models.py               # SQLAlchemy 2.x ORM:
+   │   │                           #   Market, Constraint, CandidatePair,
+   │   │                           #   Inconsistency, AlphaFlag
+   │   └── session.py              # Lazy _get_engine() / _get_session_factory()
+   │                               # get_db() context manager — no module-level create_engine
+   │
+   ├── agents/
+   │   ├── __init__.py
+   │   │
+   │   ├── scout.py                # Calls market-ingestion fetchers
+   │   │                           # Groups by canonical category (no cross-category matches)
+   │   │                           # Embedding similarity (sentence-transformers)
+   │   │                           # Signal matching (dates, entities, thresholds)
+   │   │                           # Writes Market rows + CandidatePair rows to DB
+   │   │                           # Output: list[CandidatePairIn]
+   │   │
+   │   ├── parser.py               # LLM (Claude): rules_text → ContractConstraints JSON
+   │   │                           # Rules: extract only explicit constraints; null unknowns
+   │   │                           # Writes Constraint rows to DB
+   │   │
+   │   ├── comparator.py           # Pure logic: diff two ContractConstraints
+   │   │                           # Skip null fields on either side silently
+   │   │                           # Detects: time / source / definition / structural gaps
+   │   │                           # Output: list[Inconsistency] with severity levels
+   │   │
+   │   ├── counterexample.py       # LLM (Claude): Inconsistency + both constraints
+   │   │                           # → concrete divergence scenario
+   │   │                           # Returns null if no realistic scenario possible
+   │   │
+   │   ├── rater.py                # Heuristic: severity + prices + liquidity → AlphaScore
+   │   │                           # opportunity_type: arbitrage | asymmetric | avoid | hedge
+   │   │
+   │   └── brief.py                # LLM (Claude): → 4-section plain-text brief
+   │                               # SUMMARY / KEY DIFFERENCE / WHY IT MATTERS / TRADE IDEA
+   │
+   └── api/
+       ├── __init__.py
+       └── routes.py               # FastAPI read-only endpoints (never triggers pipeline)
+                                   #   GET /alpha_flags
+                                   #   GET /is_safe_pair?market_a=&market_b=
+
+```
+
 ## Pipeline
 
 ```
